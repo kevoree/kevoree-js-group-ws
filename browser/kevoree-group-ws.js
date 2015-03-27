@@ -2,7 +2,9 @@ require=(function e(t,n,r){function s(o,u){if(!n[o]){if(!t[o]){var a=typeof requ
 // Created by leiko on 02/10/14 12:20
 var Class = require('pseudoclass');
 var WebSocket = require('ws');
+var UUID = require('uuid');
 var kevoree = require('kevoree-library').org.kevoree;
+var KevScript = require('kevoree-kevscript');
 
 var Protocol = require('./Protocol');
 var PushMessage = require('./message/PushMessage');
@@ -23,6 +25,14 @@ var ClientHandler = Class({
         // cache maps
         this.name2Ws = {};
         this.ws2Name = {};
+        this.kevs = new KevScript();
+    },
+
+    tpl: function (nodeName) {
+        return this.group.getDictionary()
+            .getString('onConnect', '')
+            .replace(/{nodeName}/g, nodeName)
+            .replace(/{groupName}/g, this.group.getName());
     },
 
     /**
@@ -31,20 +41,21 @@ var ClientHandler = Class({
      */
     getHandler: function () {
         return function (ws) {
-            var wsId = ws.upgradeReq.headers['sec-websocket-key'];
+            ws.id = UUID();
 
             // kevoree tools
             var factory = new kevoree.factory.DefaultKevoreeFactory(),
                 loader  = factory.createJSONLoader(),
                 saver   = factory.createJSONSerializer(),
-                compare = factory.createModelCompare();
+                compare = factory.createModelCompare(),
+                cloner  = factory.createModelCloner();
 
             // websocket listeners
             ws.on('close', function () {
-                if (this.ws2Name[wsId] !== null) {
-                    delete this.name2Ws[this.ws2Name[wsId]];
+                if (this.ws2Name[ws.id] !== null) {
+                    delete this.name2Ws[this.ws2Name[ws.id]];
                 }
-                delete this.ws2Name[wsId];
+                delete this.ws2Name[ws.id];
             }.bind(this));
 
             ws.on('error', function () {
@@ -55,10 +66,10 @@ var ClientHandler = Class({
                 }
 
                 if (this.ws2Name !== null) {
-                    if (this.ws2Name[wsId] !== null) {
-                        delete this.name2Ws[this.ws2Name[wsId]];
+                    if (this.ws2Name[ws.id] !== null) {
+                        delete this.name2Ws[this.ws2Name[ws.id]];
                     }
-                    delete this.ws2Name[wsId];
+                    delete this.ws2Name[ws.id];
                 }
             }.bind(this));
 
@@ -72,30 +83,38 @@ var ClientHandler = Class({
                             if (!this.name2Ws[parsedMsg.getNodeName()]) {
                                 // cache new client
                                 this.name2Ws[parsedMsg.getNodeName()] = ws;
-                                this.ws2Name[wsId] = parsedMsg.getNodeName();
+                                this.ws2Name[ws.id] = parsedMsg.getNodeName();
 
                                 if (this.group.isMaster()) {
-                                    if (!parsedMsg.getModel() || parsedMsg.getModel() === 'null') {
-                                        var currentModel = saver.serialize(this.group.getKevoreeCore().getCurrentModel());
-                                        var pushMessage = new PushMessage(currentModel);
-                                        this.group.log.info(this.group.toString(), 'Sending my model to client "'+parsedMsg.getNodeName()+'"');
-                                        ws.send(pushMessage.toRaw());
-                                    } else {
-                                        // ok i've to merge locally
+                                    var modelToApply = cloner.clone(this.group.getKevoreeCore().getCurrentModel());
+                                    if (parsedMsg.getModel() || parsedMsg.getModel() !== 'null') {
+                                        // new registered model has a model to share: merging it locally
                                         var recModel = loader.loadModelFromString(parsedMsg.getModel()).get(0);
-                                        var mergedModel = factory.createModelCloner().clone(this.group.getKevoreeCore().getCurrentModel());
-                                        compare.merge(this.group.getKevoreeCore().getCurrentModel(), recModel).applyOn(mergedModel);
+                                        compare.merge(modelToApply, recModel).applyOn(modelToApply);
                                         this.group.log.info(this.group.toString(), 'New client registered "'+parsedMsg.getNodeName()+'". Merging his model with mine');
+                                    }
+
+                                    // broadcast method
+                                    var broadcastModel = function (model) {
                                         this.group.log.info(this.group.toString(), 'Broadcasting merged model to all connected clients');
-                                        var mergedModelStr = saver.serialize(mergedModel);
+                                        var pushMessage = new PushMessage(saver.serialize(model));
                                         for (var name in this.name2Ws) {
                                             if (this.name2Ws[name].readyState === WebSocket.OPEN) {
-                                                this.name2Ws[name].send(new PushMessage(mergedModelStr).toRaw());
+                                                this.name2Ws[name].send(pushMessage.toRaw());
                                             }
                                         }
-                                        ws.send(new PushMessage(saver.serialize(mergedModel)).toRaw());
-                                        this.group.getKevoreeCore().deploy(mergedModel);
-                                    }
+                                        this.group.getKevoreeCore().deploy(model);
+                                    }.bind(this);
+
+                                    // add onConnect logic
+                                    this.kevs.parse(this.tpl(parsedMsg.getNodeName()), modelToApply, function (err, model) {
+                                        if (err) {
+                                            this.log.error(this.toString(), 'Unable to parse onConnect KevScript. Broadcasting model without onConnect process.');
+                                            broadcastModel(modelToApply);
+                                        } else {
+                                            broadcastModel(model);
+                                        }
+                                    }.bind(this));
                                 }
                             }
                             break;
@@ -146,13 +165,18 @@ var ClientHandler = Class({
      * Clear server caches
      */
     clearCache: function () {
-        this.name2Ws = {};
-        this.ws2Name = {};
+        Object.keys(this.name2Ws).forEach(function (name) {
+            delete this.name2Ws[name];
+        }.bind(this));
+
+        Object.keys(this.ws2Name).forEach(function (wsId) {
+            delete this.ws2Name[wsId];
+        }.bind(this));
     }
 });
 
 module.exports = ClientHandler;
-},{"./Protocol":2,"./message/PullMessage":3,"./message/PushMessage":4,"kevoree-library":118,"pseudoclass":121,"ws":124}],2:[function(require,module,exports){
+},{"./Protocol":2,"./message/PullMessage":3,"./message/PushMessage":4,"kevoree-kevscript":114,"kevoree-library":169,"pseudoclass":172,"uuid":176,"ws":177}],2:[function(require,module,exports){
 // Created by leiko on 02/10/14 15:29
 var PullMessage = require('./message/PullMessage');
 var PushMessage = require('./message/PushMessage');
@@ -263,7 +287,7 @@ var PullMessage = Class({
 });
 
 module.exports = PullMessage;
-},{"./../Protocol":2,"pseudoclass":121}],4:[function(require,module,exports){
+},{"./../Protocol":2,"pseudoclass":172}],4:[function(require,module,exports){
 // Created by leiko on 02/10/14 15:39
 var Class = require('pseudoclass');
 var Protocol = require('./../Protocol');
@@ -289,7 +313,7 @@ var PushMessage = Class({
 });
 
 module.exports = PushMessage;
-},{"./../Protocol":2,"pseudoclass":121}],5:[function(require,module,exports){
+},{"./../Protocol":2,"pseudoclass":172}],5:[function(require,module,exports){
 // Created by leiko on 02/10/14 15:39
 var Class = require('pseudoclass');
 var Protocol = require('./../Protocol');
@@ -320,7 +344,7 @@ var RegisterMessage = Class({
 });
 
 module.exports = RegisterMessage;
-},{"./../Protocol":2,"pseudoclass":121}],6:[function(require,module,exports){
+},{"./../Protocol":2,"pseudoclass":172}],6:[function(require,module,exports){
 
 },{}],7:[function(require,module,exports){
 /*!
@@ -7707,7 +7731,7 @@ var AdaptationPrimitive = Class({
 });
 
 module.exports = AdaptationPrimitive;
-},{"pseudoclass":117}],46:[function(require,module,exports){
+},{"pseudoclass":172}],46:[function(require,module,exports){
 var Class           = require('pseudoclass'),
     kevoree         = require('kevoree-library').org.kevoree,
     EventEmitter    = require('events').EventEmitter;
@@ -7950,7 +7974,7 @@ var Dictionary = Class({
 });
 
 module.exports = Dictionary;
-},{"events":11,"kevoree-library":114,"pseudoclass":117}],47:[function(require,module,exports){
+},{"events":11,"kevoree-library":169,"pseudoclass":172}],47:[function(require,module,exports){
 var Class       = require('pseudoclass'),
     Dictionary  = require('./Dictionary'),
     KevScript   = require('kevoree-kevscript');
@@ -8205,7 +8229,7 @@ var KevoreeEntity = Class({
 
 KevoreeEntity.DIC = 'dic_';
 module.exports = KevoreeEntity;
-},{"./Dictionary":46,"kevoree-kevscript":59,"pseudoclass":117}],48:[function(require,module,exports){
+},{"./Dictionary":46,"kevoree-kevscript":59,"pseudoclass":172}],48:[function(require,module,exports){
 var Class         = require('pseudoclass'),
     KevoreeLogger = require('kevoree-commons').KevoreeLogger,
     EventEmitter  = require('events').EventEmitter;
@@ -8290,7 +8314,7 @@ var KevoreeUI = Class({
 });
 
 module.exports = KevoreeUI;
-},{"events":11,"kevoree-commons":50,"pseudoclass":117}],49:[function(require,module,exports){
+},{"events":11,"kevoree-commons":50,"pseudoclass":172}],49:[function(require,module,exports){
 var Class = require('pseudoclass');
 
 /**
@@ -8351,7 +8375,7 @@ var Port = Class({
 });
 
 module.exports = Port;
-},{"pseudoclass":117}],50:[function(require,module,exports){
+},{"pseudoclass":172}],50:[function(require,module,exports){
 module.exports.Resolver      = require('./lib/Resolver');
 module.exports.Bootstrapper  = require('./lib/Bootstrapper');
 module.exports.KevoreeLogger = require('./lib/KevoreeLogger');
@@ -8453,7 +8477,7 @@ var Bootstrapper = Class({
 });
 
 module.exports = Bootstrapper;
-},{"pseudoclass":117}],52:[function(require,module,exports){
+},{"pseudoclass":172}],52:[function(require,module,exports){
 var Class = require('pseudoclass');
 
 var FileSystem = Class({
@@ -8489,7 +8513,7 @@ var getBrowserFileSystem = function getBrowserFileSystem(fsapi, size, callback) 
 };
 
 module.exports = FileSystem;
-},{"pseudoclass":117}],53:[function(require,module,exports){
+},{"pseudoclass":172}],53:[function(require,module,exports){
 var Class  = require('pseudoclass'),
     chalk  = require('chalk');
 
@@ -8603,7 +8627,7 @@ KevoreeLogger.ERROR = LEVELS.indexOf('error');
 KevoreeLogger.QUIET = LEVELS.indexOf('quiet');
 
 module.exports = KevoreeLogger;
-},{"chalk":55,"pseudoclass":117}],54:[function(require,module,exports){
+},{"chalk":55,"pseudoclass":172}],54:[function(require,module,exports){
 var Class = require('pseudoclass'),
     KevoreeLogger = require('./KevoreeLogger');
 
@@ -8636,7 +8660,7 @@ var Resolver = Class({
 });
 
 module.exports = Resolver;
-},{"./KevoreeLogger":53,"pseudoclass":117}],55:[function(require,module,exports){
+},{"./KevoreeLogger":53,"pseudoclass":172}],55:[function(require,module,exports){
 'use strict';
 var ansi = require('ansi-styles');
 var stripAnsi = require('strip-ansi');
@@ -8824,7 +8848,7 @@ var KevScript = Class({
 });
 
 module.exports = KevScript;
-},{"./interpreter":70,"./model-interpreter":72,"./parser":73,"pseudoclass":117}],60:[function(require,module,exports){
+},{"./interpreter":70,"./model-interpreter":72,"./parser":73,"pseudoclass":172}],60:[function(require,module,exports){
 /**
  * Created by leiko on 10/04/14.
  */
@@ -9410,7 +9434,7 @@ var interpreter = function (ast, ctxModel, callback) {
 };
 
 module.exports = interpreter;
-},{"./statements/add":74,"./statements/addBinding":75,"./statements/addRepo":76,"./statements/anything":77,"./statements/attach":78,"./statements/delBinding":79,"./statements/detach":80,"./statements/doubleQuoteLine":81,"./statements/escaped":82,"./statements/include":83,"./statements/instancePath":84,"./statements/move":85,"./statements/nameList":86,"./statements/namespace":87,"./statements/network":88,"./statements/newLine":89,"./statements/pause":90,"./statements/realString":91,"./statements/realStringNoNewLine":92,"./statements/remove":93,"./statements/repoString":94,"./statements/set":95,"./statements/singleQuoteLine":96,"./statements/start":97,"./statements/stop":98,"./statements/string":99,"./statements/string2":100,"./statements/string3":101,"./statements/typeDef":102,"./statements/typeFQN":103,"./statements/version":104,"./statements/wildcard":105,"async":106,"kevoree-library":114,"path":18}],71:[function(require,module,exports){
+},{"./statements/add":74,"./statements/addBinding":75,"./statements/addRepo":76,"./statements/anything":77,"./statements/attach":78,"./statements/delBinding":79,"./statements/detach":80,"./statements/doubleQuoteLine":81,"./statements/escaped":82,"./statements/include":83,"./statements/instancePath":84,"./statements/move":85,"./statements/nameList":86,"./statements/namespace":87,"./statements/network":88,"./statements/newLine":89,"./statements/pause":90,"./statements/realString":91,"./statements/realStringNoNewLine":92,"./statements/remove":93,"./statements/repoString":94,"./statements/set":95,"./statements/singleQuoteLine":96,"./statements/start":97,"./statements/stop":98,"./statements/string":99,"./statements/string2":100,"./statements/string3":101,"./statements/typeDef":102,"./statements/typeFQN":103,"./statements/version":104,"./statements/wildcard":105,"async":106,"kevoree-library":169,"path":18}],71:[function(require,module,exports){
 function findChanNodeGroupByName(model, name) {
   function findByName(elem) {
     var elems = (model[elem]) ? model[elem].iterator() : null;
@@ -10050,7 +10074,7 @@ module.exports = function (model, statements, stmt, opts, done) {
         }
     });
 };
-},{"../getFQN":68,"kevoree-kotlin":107,"kevoree-library":114}],75:[function(require,module,exports){
+},{"../getFQN":68,"kevoree-kotlin":107,"kevoree-library":169}],75:[function(require,module,exports){
 var kevoree = require('kevoree-library').org.kevoree;
 var factory = new kevoree.factory.DefaultKevoreeFactory();
 
@@ -10220,7 +10244,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
     cb();
 };
-},{"kevoree-library":114}],76:[function(require,module,exports){
+},{"kevoree-library":169}],76:[function(require,module,exports){
 var kevoree = require('kevoree-library').org.kevoree;
 var factory = new kevoree.factory.DefaultKevoreeFactory();
 
@@ -10234,7 +10258,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
     cb();
 };
-},{"kevoree-library":114}],77:[function(require,module,exports){
+},{"kevoree-library":169}],77:[function(require,module,exports){
 module.exports = function (model, statements, stmt) {
   return stmt.children.join('');
 }
@@ -10538,7 +10562,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 //        return cb(new Error('Error: include '+type+':'+mergeDef+' (Unable to handle "'+type+'" include type. Did you add a resolver for that?)'));
 //    }
 };
-},{"kevoree-library":114,"path":18}],84:[function(require,module,exports){
+},{"kevoree-library":169,"path":18}],84:[function(require,module,exports){
 module.exports = function (model, statements, stmt, opts) {
     var instancePath = [];
     for (var i in stmt.children) {
@@ -10717,7 +10741,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
   cb();
 }
-},{"kevoree-kotlin":107,"kevoree-library":114}],86:[function(require,module,exports){
+},{"kevoree-kotlin":107,"kevoree-library":169}],86:[function(require,module,exports){
 module.exports = function (model, statements, stmt, opts) {
     var ret = [];
     for (var i in stmt.children) {
@@ -10806,7 +10830,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
     cb();
 };
-},{"kevoree-library":114}],89:[function(require,module,exports){
+},{"kevoree-library":169}],89:[function(require,module,exports){
 module.exports = function () {
     return '\n';
 };
@@ -11044,7 +11068,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
     cb();
 };
-},{"../model-helper":71,"kevoree-kotlin":107,"kevoree-library":114}],94:[function(require,module,exports){
+},{"../model-helper":71,"kevoree-kotlin":107,"kevoree-library":169}],94:[function(require,module,exports){
 module.exports = function (model, statements, stmt) {
   return stmt.children.join('');
 };
@@ -11208,7 +11232,7 @@ module.exports = function (model, statements, stmt, opts, cb) {
 
     cb();
 };
-},{"../model-helper":71,"kevoree-library":114}],96:[function(require,module,exports){
+},{"../model-helper":71,"kevoree-library":169}],96:[function(require,module,exports){
 arguments[4][81][0].apply(exports,arguments)
 },{"dup":81}],97:[function(require,module,exports){
 var resolver = require('../instance-resolver');
@@ -11389,7 +11413,7 @@ function getBestVersion(tdefs) {
 
     return getGreater((onlyReleases.length === 0) ? tdefs : onlyReleases);
 }
-},{"../getFQN":68,"kevoree-library":114,"kevoree-registry-client":109,"semver":112}],103:[function(require,module,exports){
+},{"../getFQN":68,"kevoree-library":169,"kevoree-registry-client":109,"semver":112}],103:[function(require,module,exports){
 // Created by leiko on 27/08/14 15:15
 module.exports = function (model, statements, stmt, opts, cb) {
     var typeFqn = [];
@@ -13750,6 +13774,9 @@ if (typeof module === 'object' && module.exports === exports)
 // Not necessarily the package version of this code.
 exports.SEMVER_SPEC_VERSION = '2.0.0';
 
+var MAX_LENGTH = 256;
+var MAX_SAFE_INTEGER = Number.MAX_SAFE_INTEGER || 9007199254740991;
+
 // The actual regexps go on exports.re
 var re = exports.re = [];
 var src = exports.src = [];
@@ -13963,8 +13990,18 @@ for (var i = 0; i < R; i++) {
 
 exports.parse = parse;
 function parse(version, loose) {
+  if (version.length > MAX_LENGTH)
+    return null;
+
   var r = loose ? re[LOOSE] : re[FULL];
-  return (r.test(version)) ? new SemVer(version, loose) : null;
+  if (!r.test(version))
+    return null;
+
+  try {
+    return new SemVer(version, loose);
+  } catch (er) {
+    return null;
+  }
 }
 
 exports.valid = valid;
@@ -13992,6 +14029,9 @@ function SemVer(version, loose) {
     throw new TypeError('Invalid Version: ' + version);
   }
 
+  if (version.length > MAX_LENGTH)
+    throw new TypeError('version is longer than ' + MAX_LENGTH + ' characters')
+
   if (!(this instanceof SemVer))
     return new SemVer(version, loose);
 
@@ -14008,6 +14048,15 @@ function SemVer(version, loose) {
   this.major = +m[1];
   this.minor = +m[2];
   this.patch = +m[3];
+
+  if (this.major > MAX_SAFE_INTEGER || this.major < 0)
+    throw new TypeError('Invalid major version')
+
+  if (this.minor > MAX_SAFE_INTEGER || this.minor < 0)
+    throw new TypeError('Invalid minor version')
+
+  if (this.patch > MAX_SAFE_INTEGER || this.patch < 0)
+    throw new TypeError('Invalid patch version')
 
   // numberify any prerelease numeric ids
   if (!m[4])
@@ -15174,6 +15223,116 @@ if (typeof module !== "undefined" && module !== null) {
   module.exports.WaxeyeParser = waxeye.WaxeyeParser;
 }
 },{}],114:[function(require,module,exports){
+arguments[4][59][0].apply(exports,arguments)
+},{"./interpreter":125,"./model-interpreter":127,"./parser":128,"dup":59,"pseudoclass":172}],115:[function(require,module,exports){
+arguments[4][60][0].apply(exports,arguments)
+},{"dup":60}],116:[function(require,module,exports){
+arguments[4][61][0].apply(exports,arguments)
+},{"dup":61}],117:[function(require,module,exports){
+arguments[4][62][0].apply(exports,arguments)
+},{"dup":62}],118:[function(require,module,exports){
+arguments[4][63][0].apply(exports,arguments)
+},{"../getFQN":123,"dup":63}],119:[function(require,module,exports){
+arguments[4][64][0].apply(exports,arguments)
+},{"dup":64}],120:[function(require,module,exports){
+arguments[4][65][0].apply(exports,arguments)
+},{"dup":65}],121:[function(require,module,exports){
+arguments[4][66][0].apply(exports,arguments)
+},{"dup":66}],122:[function(require,module,exports){
+arguments[4][67][0].apply(exports,arguments)
+},{"dup":67}],123:[function(require,module,exports){
+arguments[4][68][0].apply(exports,arguments)
+},{"dup":68}],124:[function(require,module,exports){
+arguments[4][69][0].apply(exports,arguments)
+},{"dup":69}],125:[function(require,module,exports){
+arguments[4][70][0].apply(exports,arguments)
+},{"./statements/add":129,"./statements/addBinding":130,"./statements/addRepo":131,"./statements/anything":132,"./statements/attach":133,"./statements/delBinding":134,"./statements/detach":135,"./statements/doubleQuoteLine":136,"./statements/escaped":137,"./statements/include":138,"./statements/instancePath":139,"./statements/move":140,"./statements/nameList":141,"./statements/namespace":142,"./statements/network":143,"./statements/newLine":144,"./statements/pause":145,"./statements/realString":146,"./statements/realStringNoNewLine":147,"./statements/remove":148,"./statements/repoString":149,"./statements/set":150,"./statements/singleQuoteLine":151,"./statements/start":152,"./statements/stop":153,"./statements/string":154,"./statements/string2":155,"./statements/string3":156,"./statements/typeDef":157,"./statements/typeFQN":158,"./statements/version":159,"./statements/wildcard":160,"async":161,"dup":70,"kevoree-library":169,"path":18}],126:[function(require,module,exports){
+arguments[4][71][0].apply(exports,arguments)
+},{"dup":71}],127:[function(require,module,exports){
+arguments[4][72][0].apply(exports,arguments)
+},{"./elements/attaches":115,"./elements/bindings":116,"./elements/includes":117,"./elements/instances":118,"./elements/lifecycles":119,"./elements/networks":120,"./elements/repositories":121,"./elements/sets":122,"dup":72}],128:[function(require,module,exports){
+arguments[4][73][0].apply(exports,arguments)
+},{"dup":73,"waxeye":168}],129:[function(require,module,exports){
+arguments[4][74][0].apply(exports,arguments)
+},{"../getFQN":123,"dup":74,"kevoree-kotlin":162,"kevoree-library":169}],130:[function(require,module,exports){
+arguments[4][75][0].apply(exports,arguments)
+},{"dup":75,"kevoree-library":169}],131:[function(require,module,exports){
+arguments[4][76][0].apply(exports,arguments)
+},{"dup":76,"kevoree-library":169}],132:[function(require,module,exports){
+arguments[4][77][0].apply(exports,arguments)
+},{"dup":77}],133:[function(require,module,exports){
+arguments[4][78][0].apply(exports,arguments)
+},{"dup":78}],134:[function(require,module,exports){
+arguments[4][79][0].apply(exports,arguments)
+},{"dup":79}],135:[function(require,module,exports){
+arguments[4][80][0].apply(exports,arguments)
+},{"dup":80}],136:[function(require,module,exports){
+arguments[4][81][0].apply(exports,arguments)
+},{"dup":81}],137:[function(require,module,exports){
+arguments[4][82][0].apply(exports,arguments)
+},{"dup":82}],138:[function(require,module,exports){
+arguments[4][83][0].apply(exports,arguments)
+},{"dup":83,"kevoree-library":169,"path":18}],139:[function(require,module,exports){
+arguments[4][84][0].apply(exports,arguments)
+},{"dup":84}],140:[function(require,module,exports){
+arguments[4][85][0].apply(exports,arguments)
+},{"dup":85,"kevoree-kotlin":162,"kevoree-library":169}],141:[function(require,module,exports){
+arguments[4][86][0].apply(exports,arguments)
+},{"dup":86}],142:[function(require,module,exports){
+arguments[4][87][0].apply(exports,arguments)
+},{"dup":87}],143:[function(require,module,exports){
+arguments[4][88][0].apply(exports,arguments)
+},{"dup":88,"kevoree-library":169}],144:[function(require,module,exports){
+arguments[4][89][0].apply(exports,arguments)
+},{"dup":89}],145:[function(require,module,exports){
+arguments[4][90][0].apply(exports,arguments)
+},{"dup":90}],146:[function(require,module,exports){
+arguments[4][91][0].apply(exports,arguments)
+},{"dup":91}],147:[function(require,module,exports){
+arguments[4][92][0].apply(exports,arguments)
+},{"dup":92}],148:[function(require,module,exports){
+arguments[4][93][0].apply(exports,arguments)
+},{"../model-helper":126,"dup":93,"kevoree-kotlin":162,"kevoree-library":169}],149:[function(require,module,exports){
+arguments[4][94][0].apply(exports,arguments)
+},{"dup":94}],150:[function(require,module,exports){
+arguments[4][95][0].apply(exports,arguments)
+},{"../model-helper":126,"dup":95,"kevoree-library":169}],151:[function(require,module,exports){
+arguments[4][81][0].apply(exports,arguments)
+},{"dup":81}],152:[function(require,module,exports){
+arguments[4][97][0].apply(exports,arguments)
+},{"../instance-resolver":124,"dup":97}],153:[function(require,module,exports){
+arguments[4][98][0].apply(exports,arguments)
+},{"../instance-resolver":124,"dup":98}],154:[function(require,module,exports){
+arguments[4][82][0].apply(exports,arguments)
+},{"dup":82}],155:[function(require,module,exports){
+arguments[4][82][0].apply(exports,arguments)
+},{"dup":82}],156:[function(require,module,exports){
+arguments[4][82][0].apply(exports,arguments)
+},{"dup":82}],157:[function(require,module,exports){
+arguments[4][102][0].apply(exports,arguments)
+},{"../getFQN":123,"dup":102,"kevoree-library":169,"kevoree-registry-client":164,"semver":167}],158:[function(require,module,exports){
+arguments[4][103][0].apply(exports,arguments)
+},{"dup":103}],159:[function(require,module,exports){
+arguments[4][104][0].apply(exports,arguments)
+},{"dup":104}],160:[function(require,module,exports){
+arguments[4][105][0].apply(exports,arguments)
+},{"dup":105}],161:[function(require,module,exports){
+arguments[4][106][0].apply(exports,arguments)
+},{"_process":19,"dup":106}],162:[function(require,module,exports){
+arguments[4][107][0].apply(exports,arguments)
+},{"./lib/kotlin":163,"dup":107}],163:[function(require,module,exports){
+arguments[4][108][0].apply(exports,arguments)
+},{"dup":108}],164:[function(require,module,exports){
+arguments[4][109][0].apply(exports,arguments)
+},{"./lib/get":165,"./lib/post":166,"dup":109}],165:[function(require,module,exports){
+arguments[4][110][0].apply(exports,arguments)
+},{"dup":110,"http":12}],166:[function(require,module,exports){
+arguments[4][111][0].apply(exports,arguments)
+},{"dup":111,"http":12}],167:[function(require,module,exports){
+arguments[4][112][0].apply(exports,arguments)
+},{"dup":112}],168:[function(require,module,exports){
+arguments[4][113][0].apply(exports,arguments)
+},{"dup":113}],169:[function(require,module,exports){
 (function (global){
 if (!global.Kotlin) {
     global.Kotlin = require('kevoree-kotlin');
@@ -55803,14 +55962,16 @@ if (!Kotlin.modules['kevoree']) {
   Kotlin.defineModule('kevoree', _);
 }
 
-module.exports = Kotlin.modules['kevoree'];
-
+module.exports = Kotlin.modules['kevoree'].org.kevoree;
+module.exports.org = {
+  kevoree: Kotlin.modules['kevoree'].org.kevoree
+}
 }).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
-},{"kevoree-kotlin":115}],115:[function(require,module,exports){
+},{"kevoree-kotlin":170}],170:[function(require,module,exports){
 arguments[4][107][0].apply(exports,arguments)
-},{"./lib/kotlin":116,"dup":107}],116:[function(require,module,exports){
+},{"./lib/kotlin":171,"dup":107}],171:[function(require,module,exports){
 arguments[4][108][0].apply(exports,arguments)
-},{"dup":108}],117:[function(require,module,exports){
+},{"dup":108}],172:[function(require,module,exports){
 /*
 	Class - JavaScript inheritance
 
@@ -56140,17 +56301,9 @@ arguments[4][108][0].apply(exports,arguments)
 	}
 }(this));
 
-},{}],118:[function(require,module,exports){
-arguments[4][114][0].apply(exports,arguments)
-},{"dup":114,"kevoree-kotlin":119}],119:[function(require,module,exports){
-arguments[4][107][0].apply(exports,arguments)
-},{"./lib/kotlin":120,"dup":107}],120:[function(require,module,exports){
-arguments[4][108][0].apply(exports,arguments)
-},{"dup":108}],121:[function(require,module,exports){
-arguments[4][117][0].apply(exports,arguments)
-},{"dup":117}],122:[function(require,module,exports){
+},{}],173:[function(require,module,exports){
 arguments[4][106][0].apply(exports,arguments)
-},{"_process":19,"dup":106}],123:[function(require,module,exports){
+},{"_process":19,"dup":106}],174:[function(require,module,exports){
 (function (process){
 var WebSocket       = require('ws'),
     async           = require('async'),
@@ -56319,7 +56472,227 @@ SmartSocket.prototype.close = function (stop) {
 module.exports = SmartSocket;
 
 }).call(this,require('_process'))
-},{"_process":19,"async":122,"events":11,"util":39,"ws":124}],124:[function(require,module,exports){
+},{"_process":19,"async":173,"events":11,"util":39,"ws":177}],175:[function(require,module,exports){
+(function (global){
+
+var rng;
+
+if (global.crypto && crypto.getRandomValues) {
+  // WHATWG crypto-based RNG - http://wiki.whatwg.org/wiki/Crypto
+  // Moderately fast, high quality
+  var _rnds8 = new Uint8Array(16);
+  rng = function whatwgRNG() {
+    crypto.getRandomValues(_rnds8);
+    return _rnds8;
+  };
+}
+
+if (!rng) {
+  // Math.random()-based (RNG)
+  //
+  // If all else fails, use Math.random().  It's fast, but is of unspecified
+  // quality.
+  var  _rnds = new Array(16);
+  rng = function() {
+    for (var i = 0, r; i < 16; i++) {
+      if ((i & 0x03) === 0) r = Math.random() * 0x100000000;
+      _rnds[i] = r >>> ((i & 0x03) << 3) & 0xff;
+    }
+
+    return _rnds;
+  };
+}
+
+module.exports = rng;
+
+
+}).call(this,typeof global !== "undefined" ? global : typeof self !== "undefined" ? self : typeof window !== "undefined" ? window : {})
+},{}],176:[function(require,module,exports){
+//     uuid.js
+//
+//     Copyright (c) 2010-2012 Robert Kieffer
+//     MIT License - http://opensource.org/licenses/mit-license.php
+
+// Unique ID creation requires a high quality random # generator.  We feature
+// detect to determine the best RNG source, normalizing to a function that
+// returns 128-bits of randomness, since that's what's usually required
+var _rng = require('./rng');
+
+// Maps for number <-> hex string conversion
+var _byteToHex = [];
+var _hexToByte = {};
+for (var i = 0; i < 256; i++) {
+  _byteToHex[i] = (i + 0x100).toString(16).substr(1);
+  _hexToByte[_byteToHex[i]] = i;
+}
+
+// **`parse()` - Parse a UUID into it's component bytes**
+function parse(s, buf, offset) {
+  var i = (buf && offset) || 0, ii = 0;
+
+  buf = buf || [];
+  s.toLowerCase().replace(/[0-9a-f]{2}/g, function(oct) {
+    if (ii < 16) { // Don't overflow!
+      buf[i + ii++] = _hexToByte[oct];
+    }
+  });
+
+  // Zero out remaining bytes if string was short
+  while (ii < 16) {
+    buf[i + ii++] = 0;
+  }
+
+  return buf;
+}
+
+// **`unparse()` - Convert UUID byte array (ala parse()) into a string**
+function unparse(buf, offset) {
+  var i = offset || 0, bth = _byteToHex;
+  return  bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] + '-' +
+          bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]] +
+          bth[buf[i++]] + bth[buf[i++]];
+}
+
+// **`v1()` - Generate time-based UUID**
+//
+// Inspired by https://github.com/LiosK/UUID.js
+// and http://docs.python.org/library/uuid.html
+
+// random #'s we need to init node and clockseq
+var _seedBytes = _rng();
+
+// Per 4.5, create and 48-bit node id, (47 random bits + multicast bit = 1)
+var _nodeId = [
+  _seedBytes[0] | 0x01,
+  _seedBytes[1], _seedBytes[2], _seedBytes[3], _seedBytes[4], _seedBytes[5]
+];
+
+// Per 4.2.2, randomize (14 bit) clockseq
+var _clockseq = (_seedBytes[6] << 8 | _seedBytes[7]) & 0x3fff;
+
+// Previous uuid creation time
+var _lastMSecs = 0, _lastNSecs = 0;
+
+// See https://github.com/broofa/node-uuid for API details
+function v1(options, buf, offset) {
+  var i = buf && offset || 0;
+  var b = buf || [];
+
+  options = options || {};
+
+  var clockseq = options.clockseq !== undefined ? options.clockseq : _clockseq;
+
+  // UUID timestamps are 100 nano-second units since the Gregorian epoch,
+  // (1582-10-15 00:00).  JSNumbers aren't precise enough for this, so
+  // time is handled internally as 'msecs' (integer milliseconds) and 'nsecs'
+  // (100-nanoseconds offset from msecs) since unix epoch, 1970-01-01 00:00.
+  var msecs = options.msecs !== undefined ? options.msecs : new Date().getTime();
+
+  // Per 4.2.1.2, use count of uuid's generated during the current clock
+  // cycle to simulate higher resolution clock
+  var nsecs = options.nsecs !== undefined ? options.nsecs : _lastNSecs + 1;
+
+  // Time since last uuid creation (in msecs)
+  var dt = (msecs - _lastMSecs) + (nsecs - _lastNSecs)/10000;
+
+  // Per 4.2.1.2, Bump clockseq on clock regression
+  if (dt < 0 && options.clockseq === undefined) {
+    clockseq = clockseq + 1 & 0x3fff;
+  }
+
+  // Reset nsecs if clock regresses (new clockseq) or we've moved onto a new
+  // time interval
+  if ((dt < 0 || msecs > _lastMSecs) && options.nsecs === undefined) {
+    nsecs = 0;
+  }
+
+  // Per 4.2.1.2 Throw error if too many uuids are requested
+  if (nsecs >= 10000) {
+    throw new Error('uuid.v1(): Can\'t create more than 10M uuids/sec');
+  }
+
+  _lastMSecs = msecs;
+  _lastNSecs = nsecs;
+  _clockseq = clockseq;
+
+  // Per 4.1.4 - Convert from unix epoch to Gregorian epoch
+  msecs += 12219292800000;
+
+  // `time_low`
+  var tl = ((msecs & 0xfffffff) * 10000 + nsecs) % 0x100000000;
+  b[i++] = tl >>> 24 & 0xff;
+  b[i++] = tl >>> 16 & 0xff;
+  b[i++] = tl >>> 8 & 0xff;
+  b[i++] = tl & 0xff;
+
+  // `time_mid`
+  var tmh = (msecs / 0x100000000 * 10000) & 0xfffffff;
+  b[i++] = tmh >>> 8 & 0xff;
+  b[i++] = tmh & 0xff;
+
+  // `time_high_and_version`
+  b[i++] = tmh >>> 24 & 0xf | 0x10; // include version
+  b[i++] = tmh >>> 16 & 0xff;
+
+  // `clock_seq_hi_and_reserved` (Per 4.2.2 - include variant)
+  b[i++] = clockseq >>> 8 | 0x80;
+
+  // `clock_seq_low`
+  b[i++] = clockseq & 0xff;
+
+  // `node`
+  var node = options.node || _nodeId;
+  for (var n = 0; n < 6; n++) {
+    b[i + n] = node[n];
+  }
+
+  return buf ? buf : unparse(b);
+}
+
+// **`v4()` - Generate random UUID**
+
+// See https://github.com/broofa/node-uuid for API details
+function v4(options, buf, offset) {
+  // Deprecated - 'format' argument, as supported in v1.2
+  var i = buf && offset || 0;
+
+  if (typeof(options) == 'string') {
+    buf = options == 'binary' ? new Array(16) : null;
+    options = null;
+  }
+  options = options || {};
+
+  var rnds = options.random || (options.rng || _rng)();
+
+  // Per 4.4, set bits for version and `clock_seq_hi_and_reserved`
+  rnds[6] = (rnds[6] & 0x0f) | 0x40;
+  rnds[8] = (rnds[8] & 0x3f) | 0x80;
+
+  // Copy bytes to buffer, if provided
+  if (buf) {
+    for (var ii = 0; ii < 16; ii++) {
+      buf[i + ii] = rnds[ii];
+    }
+  }
+
+  return buf || unparse(rnds);
+}
+
+// Export public API
+var uuid = v4;
+uuid.v1 = v1;
+uuid.v4 = v4;
+uuid.parse = parse;
+uuid.unparse = unparse;
+
+module.exports = uuid;
+
+},{"./rng":175}],177:[function(require,module,exports){
 
 /**
  * Module dependencies.
@@ -56384,6 +56757,7 @@ var WSGroup = AbstractGroup.extend({
 
     dic_master: { },
     dic_port:   { fragmentDependant: true, defaultValue: 9000 },
+    dic_onConnect: { datatype: 'string' },
 
     construct: function () {
         this.server = null;
@@ -56542,4 +56916,4 @@ var WSGroup = AbstractGroup.extend({
 });
 
 module.exports = WSGroup;
-},{"./ClientHandler":1,"./Protocol":2,"./message/PushMessage":4,"./message/RegisterMessage":5,"kevoree-entities":40,"kevoree-library":118,"smart-socket":123,"ws":124}]},{},[]);
+},{"./ClientHandler":1,"./Protocol":2,"./message/PushMessage":4,"./message/RegisterMessage":5,"kevoree-entities":40,"kevoree-library":169,"smart-socket":174,"ws":177}]},{},[]);
