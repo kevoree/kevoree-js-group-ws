@@ -86,12 +86,13 @@ var ClientHandler = Class({
                                 this.ws2Name[ws.id] = parsedMsg.getNodeName();
 
                                 if (this.group.isMaster()) {
+                                    this.group.log.info(this.group.toString(), 'New client registered "'+parsedMsg.getNodeName()+'"');
                                     var modelToApply = cloner.clone(this.group.getKevoreeCore().getCurrentModel());
                                     if (parsedMsg.getModel() || parsedMsg.getModel() !== 'null') {
                                         // new registered model has a model to share: merging it locally
                                         var recModel = loader.loadModelFromString(parsedMsg.getModel()).get(0);
                                         compare.merge(modelToApply, recModel).applyOn(modelToApply);
-                                        this.group.log.info(this.group.toString(), 'New client registered "'+parsedMsg.getNodeName()+'". Merging his model with mine');
+                                        this.group.log.info(this.group.toString(), 'Merging his model with mine');
                                     }
 
                                     // broadcast method
