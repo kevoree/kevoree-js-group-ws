@@ -1,6 +1,6 @@
 {
   "name": "kevoree-group-ws",
-  "version": "5.2.9-SNAPSHOT",
+  "version": "5.2.9",
   "main": "./lib/WSGroup.js",
   "kevoree": {
     "package": "org.kevoree.library"
@@ -20,8 +20,8 @@
     "kevoree-kevscript": "^2.1.6",
     "kevoree-library": "^5.0.4",
     "pseudoclass": "^1.0.2",
+    "shortid": "^2.2.2",
     "smart-socket": "^0.2.1",
-    "uuid": "^2.0.1",
     "ws": "^0.4.32"
   },
   "devDependencies": {
