@@ -8,12 +8,16 @@ module.exports = function (grunt) {
         // by parsing your pkg.main entry point
         kevoree_genmodel: {
             main: {
-                options: { verbose: true }
+                options: {
+                    quiet: false,
+                    verbose: true
+                }
             }
         },
 
-        // pushes your model on http://registry.kevoree.org
-        kevoree_registry: { src: 'kevlib.json' },
+        kevoree_registry: {
+            src: 'kevlib.json'
+        },
 
         browserify: {
             browser: {
@@ -46,11 +50,14 @@ module.exports = function (grunt) {
 
     grunt.registerTask('default', 'build');
     grunt.registerTask('build', 'Build Kevoree module', function () {
-      if (process.env.KEVOREE_RUNTIME !== 'dev') {
-        grunt.tasks(['kevoree_genmodel', 'browser']);
-      }
+        if (process.env.KEVOREE_RUNTIME !== 'dev') {
+            grunt.tasks([
+                'kevoree_genmodel',
+                'browser'
+            ]);
+        }
     });
-    grunt.registerTask('publish', ['kevoree_registry']);
-    grunt.registerTask('kev', ['kevoree']);
-    grunt.registerTask('browser', ['browserify', 'uglify']);
+    grunt.registerTask('publish', ['uglify', 'kevoree_registry']);
+    grunt.registerTask('kev', ['build', 'kevoree']);
+    grunt.registerTask('browser', 'browserify');
 };
