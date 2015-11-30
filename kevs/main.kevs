@@ -1,7 +1,7 @@
 add node0 : JavascriptNode
 add sync : WSGroup
 add node0.printer : ConsolePrinter
-add chan : RemoteWSChan/5.2.11-SNAPSHOT
+add chan : RemoteWSChan
 
 set sync.master = 'node0'
 set chan.host = 'ws.kevoree.org'

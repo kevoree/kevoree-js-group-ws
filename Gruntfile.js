@@ -57,7 +57,7 @@ module.exports = function (grunt) {
             ]);
         }
     });
-    grunt.registerTask('publish', ['uglify', 'kevoree_registry']);
+    grunt.registerTask('publish', 'kevoree_registry');
     grunt.registerTask('kev', ['build', 'kevoree']);
-    grunt.registerTask('browser', 'browserify');
+    grunt.registerTask('browser', ['browserify', 'uglify']);
 };
