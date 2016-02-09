@@ -1,18 +1,22 @@
 add node0 : JavascriptNode
-add sync : WSGroup
-add node0.printer : ConsolePrinter
-add chan : RemoteWSChan
+add node0.ticker : Ticker
 
-set sync.master = 'node0'
-set chan.host = 'ws.kevoree.org'
-set chan.uuid = '%%id%%'
-set node0.logLevel = 'debug'
+add sync : WSGroup
+add chan : RemoteWSChan
 
 attach node0 sync
 
-bind node0.printer.input chan
+set sync.master = 'node0'
+set sync.filter = '^js.+$'
 
-set sync.onConnect = 'add {nodeName}.ticker: Ticker
-bind {nodeName}.ticker.tick chan'
+set chan.host = 'ws.kevoree.org'
+set chan.uuid = '%%id%%'
+
+set node0.logLevel = 'debug'
+
+bind node0.ticker.tick chan
+
+set sync.onConnect = 'add {nodeName}.printer: ConsolePrinter
+bind {nodeName}.printer.input chan'
 
 set sync.onDisconnect = 'remove {nodeName}'
