@@ -58,6 +58,6 @@ module.exports = function (grunt) {
         }
     });
     grunt.registerTask('publish', 'kevoree_registry');
-    grunt.registerTask('kev', ['build', 'kevoree']);
+    grunt.registerTask('kev', ['kevoree_genmodel', 'kevoree']);
     grunt.registerTask('browser', ['browserify', 'uglify']);
 };
