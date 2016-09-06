@@ -30,7 +30,7 @@ module.exports = function (grunt) {
     browserify: {
       browser: {
         options: {
-          external: ['kevoree-library', 'ws'],
+          external: ['kevoree-library'],
           alias: ['<%= pkg.main %>:<%= pkg.name %>']
         },
         src: ['<%= pkg.main %>'],
