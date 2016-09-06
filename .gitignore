@@ -33,4 +33,4 @@ node_modules
 
 # Kevoree JS
 kevlib.json
-browser/*.js
+browser/kevoree-group-ws*.js
