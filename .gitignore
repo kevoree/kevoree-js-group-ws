@@ -34,3 +34,6 @@ node_modules
 # Kevoree JS
 kevlib.json
 browser/kevoree-group-ws*.js
+
+# Yarn
+yarn.lock
